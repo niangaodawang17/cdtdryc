@@ -6,17 +6,27 @@ import pandas as pd
 import streamlit as st
 
 
+# 获取当前脚本所在的绝对路径（即仓库根目录）
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PACKAGE_PATH = os.path.join(PROJECT_DIR, "modeling_results", "capacitance_model_package.pkl")
+
+# 【已修正】直接指向根目录下的模型文件，去掉了不存在的 modeling_results 文件夹
+MODEL_PACKAGE_PATH = os.path.join(PROJECT_DIR, "capacitance_model_package.pkl")
 
 
 @st.cache_resource
 def load_model_package():
+    """加载模型包，使用缓存避免重复加载"""
+    # 增加一个检查，如果文件不存在会提示具体路径，方便排查
+    if not os.path.exists(MODEL_PACKAGE_PATH):
+        st.error(f"找不到模型文件！请检查文件名是否正确。\n当前查找路径: {MODEL_PACKAGE_PATH}")
+        return None
+    
     with open(MODEL_PACKAGE_PATH, "rb") as f:
         return pickle.load(f)
 
 
 def predict_capacity(values, package):
+    """执行预测逻辑"""
     raw = np.asarray(values, dtype=float).reshape(1, -1)
     scaled = package["scaler"].transform(raw)
     scaled_df = pd.DataFrame(
@@ -27,17 +37,25 @@ def predict_capacity(values, package):
 
 
 def read_r2(row):
+    """兼容不同的 R2 键名写法"""
     return row.get("R2", row.get("R²", row.get("R虏", 0)))
 
 
+# --- 页面配置 ---
 st.set_page_config(
     page_title="Capacitance Prediction Platform",
-    page_icon="C",
+    page_icon="⚡",  # 建议用个图标，比 "C" 好看点
     layout="wide",
 )
 
+# 加载模型
 package = load_model_package()
 
+# 如果模型加载失败（比如文件没找到），就不渲染后面的界面了，防止报错
+if package is None:
+    st.stop()
+
+# --- CSS 样式美化 ---
 st.markdown(
     """
     <style>
@@ -183,6 +201,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# --- 头部展示区 ---
 st.markdown(
     f"""
     <div class="hero">
@@ -201,6 +220,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# --- 主布局 ---
 left, right = st.columns([2.15, 1], gap="large")
 
 with left:
@@ -216,6 +236,9 @@ with left:
 
     values = []
     tabs = st.tabs(["Pore and Defect", "Composition", "Dopant and Test"])
+    
+    # 根据特征数量动态分组，防止索引越界
+    total_features = len(package["feature_stats"])
     groups = [
         package["feature_stats"][:4],
         package["feature_stats"][4:9],
@@ -228,24 +251,27 @@ with left:
             cols = st.columns(2)
             for local_idx, item in enumerate(group):
                 idx = start_idx + local_idx
-                with cols[local_idx % 2]:
-                    values.append(
-                        st.number_input(
-                            label=f"{idx + 1}. {item['name']}",
-                            value=float(item["mean"]),
-                            format="%.6f",
-                            help=f"Training range: {item['min']:.6g} - {item['max']:.6g}",
-                            key=f"feature_{idx}",
+                # 安全检查：确保索引没有超出总特征数
+                if idx < total_features:
+                    with cols[local_idx % 2]:
+                        values.append(
+                            st.number_input(
+                                label=f"{idx + 1}. {item['name']}",
+                                value=float(item["mean"]),
+                                format="%.6f",
+                                help=f"Training range: {item['min']:.6g} - {item['max']:.6g}",
+                                key=f"feature_{idx}",
+                            )
                         )
-                    )
 
-    # The tab layout appends values by tab; restore original feature order.
+    # 重新排序输入值以匹配模型要求的特征顺序
     ordered_values = [None] * len(package["feature_names"])
     cursor = 0
     for group_start, group in zip(start_indices, groups):
         for local_idx, _ in enumerate(group):
-            ordered_values[group_start + local_idx] = values[cursor]
-            cursor += 1
+            if group_start + local_idx < len(ordered_values):
+                ordered_values[group_start + local_idx] = values[cursor]
+                cursor += 1
 
     predict_clicked = st.button("Predict Capacity", type="primary", use_container_width=True)
 
